@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -10,26 +11,38 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"sync"
 )
 
 // 关于这个替换login_slogin.html,是为了防止有些学校使用sso,把流量302到sso上,用不上不开就ok
+//
 //go:embed static
 var content embed.FS
 
 var (
 	backendURL         = "http://newjw.cuz.edu.cn"
 	listenAddr         = ":8000"
-	replaceLoginPage   = false
+	replaceLoginPage   = true
 	targetHost         = "newjw.cuz.edu.cn"
+	adminToken         = "hellofromint"
 	targetPathSuffixes = []string{
 		"/jwglxt/",
 		"/zftal-ui-v5-1.0.2/",
-		"/zftal-ezproxy/", // 未来用于写控制面板,暂时先放这
-	}
-	allowedUsers = []string{
-		"22010101",
+		"/zftal-ezproxy/",
 	}
 )
+
+var (
+	usersMux sync.RWMutex
+	usersMap = make(map[string]bool)
+)
+
+func init() {
+	initialUsers := []string{"22010101"}
+	for _, user := range initialUsers {
+		usersMap[user] = true
+	}
+}
 
 const (
 	colorReset  = "\033[0m"
@@ -96,6 +109,7 @@ func main() {
 			return
 		}
 
+		// 处理login_slogin.html
 		if cleanPath == "/jwglxt/xtgl/login_slogin.html" {
 			// 替换login_slogin.html(如果需要)
 			if r.Method == "GET" && replaceLoginPage {
@@ -109,6 +123,20 @@ func main() {
 					http.Error(w, errMsg, http.StatusForbidden)
 					return
 				}
+			}
+		}
+
+		if strings.HasPrefix(cleanPath, "/zftal-ezproxy/") {
+			switch cleanPath {
+			case "/zftal-ezproxy/list":
+				handleListUsers(w, r)
+				return
+			case "/zftal-ezproxy/add":
+				handleAddUser(w, r)
+				return
+			case "/zftal-ezproxy/delete":
+				handleDeleteUser(w, r)
+				return
 			}
 		}
 
@@ -144,7 +172,7 @@ func validateLogin(r *http.Request) (bool, string) {
 	}
 	defer r.Body.Close()
 
-	// 恢复body
+	// 恢复body,用于parseForm
 	r.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
 
 	if err := r.ParseForm(); err != nil {
@@ -157,16 +185,98 @@ func validateLogin(r *http.Request) (bool, string) {
 		return false, fmt.Sprintf("Access Denied: %s 不在白名单中", username)
 	}
 
-	log.Printf("用户名%s验证通过", username)
+	// 再次恢复用于传输
+	r.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
+	logInfo("用户名%s验证通过", username)
 	return true, ""
 }
 
-// isUserAllowed 检查用户是否在白名单中
+// isUserAllowed检查用户是否在白名单中
 func isUserAllowed(username string) bool {
-	for _, user := range allowedUsers {
-		if user == username {
-			return true
-		}
+	usersMux.RLock()
+	defer usersMux.RUnlock()
+	return usersMap[username]
+}
+
+// Admin管理
+func verifyToken(r *http.Request) bool {
+	token := r.URL.Query().Get("token")
+	return token == adminToken
+}
+
+func handleListUsers(w http.ResponseWriter, r *http.Request) {
+	if !verifyToken(r) {
+		respondJSON(w, false, "token验证失败", nil)
+		return
 	}
-	return false
+
+	usersMux.RLock()
+	defer usersMux.RUnlock()
+
+	users := make([]string, 0, len(usersMap))
+	for user := range usersMap {
+		users = append(users, user)
+	}
+
+	respondJSON(w, true, "获取成功", users)
+}
+
+func handleAddUser(w http.ResponseWriter, r *http.Request) {
+	if !verifyToken(r) {
+		respondJSON(w, false, "token验证失败", nil)
+		return
+	}
+
+	username := r.URL.Query().Get("user")
+	if username == "" {
+		respondJSON(w, false, "用户名不能为空", nil)
+		return
+	}
+
+	usersMux.Lock()
+	defer usersMux.Unlock()
+
+	if usersMap[username] {
+		respondJSON(w, false, "用户已存在", nil)
+		return
+	}
+
+	usersMap[username] = true
+	logInfo("添加用户: %s", username)
+	respondJSON(w, true, "添加成功", username)
+}
+
+func handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	if !verifyToken(r) {
+		respondJSON(w, false, "token验证失败", nil)
+		return
+	}
+
+	username := r.URL.Query().Get("user")
+	if username == "" {
+		respondJSON(w, false, "用户名不能为空", nil)
+		return
+	}
+
+	usersMux.Lock()
+	defer usersMux.Unlock()
+
+	if !usersMap[username] {
+		respondJSON(w, false, "用户不存在", nil)
+		return
+	}
+
+	delete(usersMap, username)
+	logInfo("删除用户: %s", username)
+	respondJSON(w, true, "删除成功", username)
+}
+
+func respondJSON(w http.ResponseWriter, success bool, message string, data interface{}) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	response := map[string]interface{}{
+		"success": success,
+		"message": message,
+		"data":    data,
+	}
+	json.NewEncoder(w).Encode(response)
 }
