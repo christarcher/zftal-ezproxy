@@ -2,7 +2,7 @@ package main
 
 import (
 	"embed"
-	// "fmt"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -12,12 +12,14 @@ import (
 	"strings"
 )
 
-//go:embed static/login_slogin.html
-var content embed.FS 
+// 关于这个替换login_slogin.html,是为了防止有些学校使用sso,把流量302到sso上,用不上不开就ok
+//go:embed static
+var content embed.FS
 
 var (
 	backendURL         = "http://newjw.cuz.edu.cn"
 	listenAddr         = ":8000"
+	replaceLoginPage   = false
 	targetHost         = "newjw.cuz.edu.cn"
 	targetPathSuffixes = []string{
 		"/jwglxt/",
@@ -29,10 +31,28 @@ var (
 	}
 )
 
+const (
+	colorReset  = "\033[0m"
+	colorRed    = "\033[31m"
+	colorGreen  = "\033[32m"
+	colorYellow = "\033[33m"
+	colorCyan   = "\033[36m"
+)
+
+func logInfo(format string, args ...interface{}) {
+	log.Printf("%s[INFO]%s "+format, append([]interface{}{colorGreen, colorReset}, args...)...)
+}
+func logWarn(format string, args ...interface{}) {
+	log.Printf("%s[WARN]%s "+format, append([]interface{}{colorYellow, colorReset}, args...)...)
+}
+func logError(format string, args ...interface{}) {
+	log.Printf("%s[ERROR]%s "+format, append([]interface{}{colorRed, colorReset}, args...)...)
+}
+
 func main() {
 	target, err := url.Parse(backendURL)
 	if err != nil {
-		log.Fatal("无法解析后端URL:", err)
+		logInfo("无法解析后端URL:", err)
 	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
@@ -56,7 +76,7 @@ func main() {
 		}
 
 		if cleanPath != originalPath {
-			log.Printf("可疑路径拦截: %s 访问了 %s", r.RemoteAddr, originalPath)
+			logWarn("%s 访问了可疑路径 %s", r.RemoteAddr, originalPath)
 			http.Error(w, "非法路径", http.StatusBadRequest)
 			return
 		}
@@ -71,74 +91,73 @@ func main() {
 		}
 
 		if !allowed {
-			log.Printf("未授权路径: %s - %s", r.RemoteAddr, cleanPath)
+			logWarn("%s 访问了未知路径 %s", r.RemoteAddr, cleanPath)
 			http.NotFound(w, r)
 			return
 		}
 
-		// 处理login_slogin.html的替换
-		if r.Method == "GET" && cleanPath == "/jwglxt/xtgl/login_slogin.html" {
-			success, err := serveLoginHTML(w, r)
-			if !success {
-				http.Error(w, err, http.StatusInternalServerError)
-			}
-			return
-		}
-		if r.Method == "POST" && cleanPath == "/jwglxt/xtgl/login_slogin.html" {
-			success, err := validateLogin(w, r)
-			if !success {
-				http.Error(w, err, http.StatusForbidden)
+		if cleanPath == "/jwglxt/xtgl/login_slogin.html" {
+			// 替换login_slogin.html(如果需要)
+			if r.Method == "GET" && replaceLoginPage {
+				serveLoginHTML(w)
 				return
+			}
+			// 进行身份验证, 注意这里需要把请求代理到后端, 没有错误不需要return
+			if r.Method == "POST" {
+				success, errMsg := validateLogin(r)
+				if !success {
+					http.Error(w, errMsg, http.StatusForbidden)
+					return
+				}
 			}
 		}
 
 		proxy.ServeHTTP(w, r)
 	})
 
-	log.Printf("反向代理服务器启动在 %s", listenAddr)
-	log.Printf("后端服务器: %s", backendURL)
-	log.Printf("目标Host: %s", targetHost)
-	log.Printf("允许的路径前缀: %v", targetPathSuffixes)
+	logInfo("反向代理服务器启动在 %s", listenAddr)
+	logInfo("后端服务器: %s", backendURL)
+	logInfo("目标Host: %s", targetHost)
+	logInfo("允许的路径前缀: %v", targetPathSuffixes)
 	log.Fatal(http.ListenAndServe(listenAddr, nil))
 }
 
-// 用于控制正方登录页面
-func serveLoginHTML(w http.ResponseWriter, r *http.Request) (bool, string) {
+func serveLoginHTML(w http.ResponseWriter) {
 	data, err := content.ReadFile("static/login_slogin.html")
 	if err != nil {
-		log.Printf("读取HTML文件失败: %v", err)
-		return false, "Failed to get html file"
+		logError("读取HTML文件失败: %v", err)
+		http.Error(w, "读取HTML文件失败", http.StatusInternalServerError)
+		return
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write(data)
-	return true, ""
+	return
 }
 
-// validateLogin 验证POST登录请求
-func validateLogin(w http.ResponseWriter, r *http.Request) (bool, string) {
-	// 读取请求体并保存因为ParseForm会消耗掉body,注意需要恢复请求体
+// 验证POST登录请求
+func validateLogin(r *http.Request) (bool, string) {
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
-		log.Printf("读取请求体失败: %v", err)
-		return false, "Bad Request"
+		return false, fmt.Sprintf("读取请求体失败: %v", err)
 	}
+	defer r.Body.Close()
+
+	// 恢复body
 	r.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
 
 	if err := r.ParseForm(); err != nil {
-		log.Printf("解析表单失败: %v", err)
-		return false, "Bad Request"
+		return false, fmt.Sprintf("解析表单失败: %v", err)
 	}
-	r.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
 
 	username := r.FormValue("yhm")
 	if !isUserAllowed(username) {
-		log.Printf("拒绝访问: 用户名%s不在白名单中", username)
-		return false, "Access Denied"
+		logWarn("用户名%s不在白名单中", username)
+		return false, fmt.Sprintf("Access Denied: %s 不在白名单中", username)
 	}
 
-	log.Printf("验证通过: 用户名%s", username)
+	log.Printf("[validateLogin]验证通过: 用户名%s", username)
 	return true, ""
 }
 
