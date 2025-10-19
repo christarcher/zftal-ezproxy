@@ -12,11 +12,13 @@ import (
 	"strings"
 )
 
+//go:embed login_slogin.html
+var content embed.FS 
+
 var (
 	backendURL         = "http://127.0.0.1"
 	listenAddr         = ":8000"
 	targetHost         = "newjw.cuz.edu.cn"
-	content embed.FS //go:embed login_slogin.html
 	targetPathSuffixes = []string{
 		"/jwglxt/",
 		"/zftal-ui-v5-1.0.2/",
