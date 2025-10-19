@@ -157,7 +157,7 @@ func validateLogin(r *http.Request) (bool, string) {
 		return false, fmt.Sprintf("Access Denied: %s 不在白名单中", username)
 	}
 
-	log.Printf("[validateLogin]验证通过: 用户名%s", username)
+	log.Printf("用户名%s验证通过", username)
 	return true, ""
 }
 
