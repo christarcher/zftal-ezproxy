@@ -12,16 +12,17 @@ import (
 	"strings"
 )
 
-//go:embed login_slogin.html
+//go:embed static/login_slogin.html
 var content embed.FS 
 
 var (
-	backendURL         = "http://127.0.0.1"
+	backendURL         = "http://newjw.cuz.edu.cn"
 	listenAddr         = ":8000"
 	targetHost         = "newjw.cuz.edu.cn"
 	targetPathSuffixes = []string{
 		"/jwglxt/",
 		"/zftal-ui-v5-1.0.2/",
+		"/zftal-ezproxy/", // 未来用于写控制面板,暂时先放这
 	}
 	allowedUsers = []string{
 		"22010101",
@@ -68,9 +69,6 @@ func main() {
 				break
 			}
 		}
-		if cleanPath == "/jwglxt/xtgl/login_slogin.html" {
-			allowed = true
-		}
 
 		if !allowed {
 			log.Printf("未授权路径: %s - %s", r.RemoteAddr, cleanPath)
@@ -106,7 +104,7 @@ func main() {
 
 // 用于控制正方登录页面
 func serveLoginHTML(w http.ResponseWriter, r *http.Request) (bool, string) {
-	data, err := content.ReadFile("login_slogin.html")
+	data, err := content.ReadFile("static/login_slogin.html")
 	if err != nil {
 		log.Printf("读取HTML文件失败: %v", err)
 		return false, "Failed to get html file"

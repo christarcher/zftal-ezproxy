@@ -16,4 +16,4 @@
 
 ---
 
-![zftal-ezproxy](imgs/zftal-ezproxy.png)
+![zftal-ezproxy](static/zftal-ezproxy.png)
